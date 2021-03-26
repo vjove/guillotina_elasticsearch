@@ -37,10 +37,14 @@ ORDER BY parent_id
 
 PAGE_SIZE = 1000
 
+CREATE_TEMP_TABLE = f"""
+CREATE TEMP TABLE esvacuum_{{objects_rawtable}} AS
+    SELECT zoid, parent_id, tid FROM {{objects_table}} WHERE of is NULL and parent_id != '{TRASHED_ID}'
+"""
+
 GET_OBS_BY_TID = f"""
 SELECT zoid, parent_id, tid
-FROM {{objects_table}}
-WHERE of is NULL and parent_id != '{TRASHED_ID}'
+FROM esvacuum_{{objects_rawtable}}
 ORDER BY tid ASC, zoid ASC
 """
 
@@ -92,7 +96,11 @@ class Vacuum:
 
     def get_sql(self, source):
         storage = self.txn._manager._storage
-        return source.format(objects_table=storage._objects_table_name)
+        objects_table = storage._objects_table_name
+        objects_schema, objects_rawtable = objects_table.split('.')
+        return source.format(objects_table=objects_table,
+                             objects_schema=objects_schema,
+                             objects_rawtable=objects_rawtable)
 
     async def iter_batched_es_keys(self):
         # go through one index at a time...
@@ -129,6 +137,8 @@ class Vacuum:
     async def iter_paged_db_keys(self, oids):
         if self.use_tid_query:
             conn = await self.txn.get_connection()
+            sql = self.get_sql(CREATE_TEMP_TABLE)
+            await conn.execute(sql)
             async with conn.transaction():
                 sql = self.get_sql(GET_OBS_BY_TID)
                 cur = await conn.cursor(sql)
